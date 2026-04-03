@@ -1731,6 +1731,30 @@ void AddSpecialBoxSearchController::searchQuery(const QString &query) {
 		_chatsContactsAdded = false;
 		_chatMembersAdded = false;
 		_globalLoaded = false;
+
+		_api.request(base::take(_participantByIdRequestId)).cancel();
+		auto ok = false;
+		const auto userId = UserId(query.trimmed().toULongLong(&ok));
+		if (ok && userId) {
+			auto found = false;
+			if (const auto user = _peer->owner().userLoaded(userId)) {
+				delegate()->peerListSearchAddRow(user);
+				found = true;
+			} else if (const auto chat = _peer->asChat()) {
+				for (const auto &participant : chat->participants) {
+					if (peerToUser(participant->id) == userId) {
+						delegate()->peerListSearchAddRow(participant);
+						found = true;
+						break;
+					}
+				}
+			}
+			if (found) {
+				delegate()->peerListSearchRefreshRows();
+			} else if (_peer->isChannel()) {
+				requestParticipantById(userId);
+			}
+		}
 		if (!_query.isEmpty() && !searchParticipantsInCache()) {
 			_timer.callOnce(AutoSearchTimeout);
 		} else {
@@ -1889,6 +1913,31 @@ void AddSpecialBoxSearchController::searchParticipantsDone(
 	});
 
 	delegate()->peerListSearchRefreshRows();
+}
+
+void AddSpecialBoxSearchController::requestParticipantById(UserId userId) {
+	Expects(_peer->isChannel());
+
+	const auto channel = _peer->asChannel();
+	const auto query = _query;
+	_participantByIdRequestId = _api.request(MTPchannels_GetParticipant(
+		channel->inputChannel(),
+		MTP_inputPeerUser(MTP_long(userId.bare), MTP_long(0))
+	)).done([=](const MTPchannels_ChannelParticipant &result) {
+		_participantByIdRequestId = 0;
+		if (_query != query) {
+			return;
+		}
+		result.match([&](const MTPDchannels_channelParticipant &data) {
+			channel->owner().processUsers(data.vusers());
+			if (const auto user = channel->owner().userLoaded(userId)) {
+				delegate()->peerListSearchAddRow(user);
+				delegate()->peerListSearchRefreshRows();
+			}
+		});
+	}).fail([=] {
+		_participantByIdRequestId = 0;
+	}).send();
 }
 
 void AddSpecialBoxSearchController::requestGlobal() {

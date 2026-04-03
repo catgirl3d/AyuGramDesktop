@@ -201,6 +201,7 @@ private:
 		mtpRequestId requestId,
 		const MTPcontacts_Found &result);
 	void requestParticipants();
+	void requestParticipantById(UserId userId);
 	void addChatMembers(not_null<ChatData*> chat);
 	void addChatsContacts();
 	void requestGlobal();
@@ -214,6 +215,7 @@ private:
 	base::Timer _timer;
 	QString _query;
 	mtpRequestId _requestId = 0;
+	mtpRequestId _participantByIdRequestId = 0;
 	int _offset = 0;
 	bool _participantsLoaded = false;
 	bool _chatsContactsAdded = false;
