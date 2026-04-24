@@ -1830,6 +1830,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_manage_channel_title" = "Manage Channel";
 "lng_manage_bot_title" = "Manage Bot";
 "lng_manage_peer_recent_actions" = "Recent actions";
+"lng_admin_log_export" = "Export recent actions";
+"lng_admin_log_export_progress" = "Exporting recent actions...";
+"lng_admin_log_export_done" = "Recent actions exported.";
+"lng_admin_log_export_error" = "Couldn't export recent actions.";
 "lng_manage_peer_star_ref" = "Affiliate programs";
 "lng_manage_peer_members" = "Members";
 "lng_manage_peer_subscribers" = "Subscribers";

@@ -88,6 +88,7 @@ public:
 	void applyFilter(FilterValue &&value);
 	void applySearch(const QString &query);
 	void showFilter(Fn<void(FilterValue &&filter)> callback);
+	void exportLog();
 
 	// Ui::AbstractTooltipShower interface.
 	QString tooltipText() const override;
@@ -208,6 +209,12 @@ private:
 	void showContextMenu(QContextMenuEvent *e, bool showFromTouch = false);
 	void savePhotoToFile(not_null<PhotoData*> photo);
 	void saveDocumentToFile(not_null<DocumentData*> document);
+	void startExport(QString path);
+	void requestExportPage();
+	void finishExport();
+	void failExport();
+	void resetExport();
+	[[nodiscard]] QString serializeExport() const;
 	void copyContextImage(not_null<PhotoData*> photo);
 	void showStickerPackInfo(not_null<DocumentData*> document);
 	void cancelContextDownload(not_null<DocumentData*> document);
@@ -372,6 +379,14 @@ private:
 	std::vector<not_null<UserData*>> _admins;
 	std::vector<not_null<UserData*>> _adminsCanEdit;
 	Fn<void(FilterValue &&filter)> _showFilterCallback;
+	FilterValue _exportFilter;
+	QString _exportSearchQuery;
+	QString _exportPath;
+	std::vector<std::vector<QString>> _exportEntries;
+	std::set<uint64> _exportEventIds;
+	uint64 _exportMinId = 0;
+	mtpRequestId _exportRequestId = 0;
+	bool _exporting = false;
 
 	rpl::event_stream<> _showSearchSignal;
 	rpl::event_stream<int> _scrollToSignal;

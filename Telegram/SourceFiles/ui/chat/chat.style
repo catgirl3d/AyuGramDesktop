@@ -614,6 +614,10 @@ historyAdminLogWhatIsThis: IconButton(historyAttach) {
 	icon: icon {{ "menu/faq", windowActiveTextFg }};
 	iconOver: icon {{ "menu/faq", windowActiveTextFg }};
 }
+historyAdminLogExport: IconButton(historyAttach) {
+	icon: icon {{ "menu/export", windowActiveTextFg }};
+	iconOver: icon {{ "menu/export", windowActiveTextFg }};
+}
 
 historyFastShareSize: topPeersSelectorUserpicSize;
 historyFastShareLeft: 13px;

@@ -296,6 +296,7 @@ Widget::Widget(
 	this,
 	tr::lng_menu_settings(tr::now),
 	st::historyComposeButton)
+, _export(this, st::historyAdminLogExport)
 , _whatIsThis(this, st::historyAdminLogWhatIsThis) {
 	_fixedBar->move(0, 0);
 	_fixedBar->resizeToWidth(width());
@@ -341,6 +342,10 @@ Widget::Widget(
 	_settingsFilter->setClickedCallback([=] {
 		showFilter();
 	});
+	_export->setClickedCallback([=] {
+		_inner->exportLog();
+	});
+	_export->setAccessibleName(tr::lng_admin_log_export(tr::now));
 	_whatIsThis->setClickedCallback([=] {
 		controller->show(Ui::MakeInformBox(channel->isMegagroup()
 			? tr::lng_admin_log_about_text()
@@ -522,6 +527,9 @@ void Widget::resizeEvent(QResizeEvent *e) {
 		contentWidth,
 		_settingsFilter->height());
 	_settingsFilter->setGeometry(fullWidthButtonRect);
+	_export->moveToRight(
+		st::historySendRight + _whatIsThis->width(),
+		bottom - _export->height());
 	_whatIsThis->moveToRight(
 		st::historySendRight,
 		bottom - _whatIsThis->height());

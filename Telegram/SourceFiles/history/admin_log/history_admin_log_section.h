@@ -83,6 +83,7 @@ private:
 	object_ptr<FixedBar> _fixedBar;
 	object_ptr<Ui::PlainShadow> _fixedBarShadow;
 	object_ptr<Ui::FlatButton> _settingsFilter;
+	object_ptr<Ui::IconButton> _export;
 	object_ptr<Ui::IconButton> _whatIsThis;
 
 	Ui::Controls::SwipeBackResult _swipeBackData;

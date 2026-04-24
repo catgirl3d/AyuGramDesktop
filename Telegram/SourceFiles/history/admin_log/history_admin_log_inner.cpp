@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/history_view_message.h"
 #include "history/view/history_view_service_message.h"
 #include "history/view/history_view_cursor_state.h"
+#include "layout/layout_selection.h"
 #include "chat_helpers/message_field.h"
 #include "boxes/sticker_set_box.h"
 #include "boxes/translate_box.h"
@@ -74,6 +75,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtWidgets/QApplication>
 #include <QtGui/QClipboard>
+#include <QtCore/QDateTime>
+#include <QtCore/QSaveFile>
 
 namespace AdminLog {
 namespace {
@@ -84,6 +87,95 @@ constexpr auto kScrollDateHideTimeout = 1000;
 constexpr auto kEventsFirstPage = 20;
 constexpr auto kEventsPerPage = 50;
 constexpr auto kClearUserpicsAfter = 50;
+
+[[nodiscard]] auto RequestFilterFlags(const FilterValue &filter)
+-> MTPDchannelAdminLogEventsFilter::Flags {
+	using Flag = MTPDchannelAdminLogEventsFilter::Flag;
+	using LocalFlag = FilterValue::Flag;
+	const auto empty = MTPDchannelAdminLogEventsFilter::Flags(0);
+	const auto value = filter.flags.value_or(LocalFlag());
+	return empty
+		| ((value & LocalFlag::Join) ? Flag::f_join : empty)
+		| ((value & LocalFlag::Leave) ? Flag::f_leave : empty)
+		| ((value & LocalFlag::Invite) ? Flag::f_invite : empty)
+		| ((value & LocalFlag::Ban) ? Flag::f_ban : empty)
+		| ((value & LocalFlag::Unban) ? Flag::f_unban : empty)
+		| ((value & LocalFlag::Kick) ? Flag::f_kick : empty)
+		| ((value & LocalFlag::Unkick) ? Flag::f_unkick : empty)
+		| ((value & LocalFlag::Promote) ? Flag::f_promote : empty)
+		| ((value & LocalFlag::Demote) ? Flag::f_demote : empty)
+		| ((value & LocalFlag::Info) ? Flag::f_info : empty)
+		| ((value & LocalFlag::Settings) ? Flag::f_settings : empty)
+		| ((value & LocalFlag::Pinned) ? Flag::f_pinned : empty)
+		| ((value & LocalFlag::Edit) ? Flag::f_edit : empty)
+		| ((value & LocalFlag::Delete) ? Flag::f_delete : empty)
+		| ((value & LocalFlag::GroupCall) ? Flag::f_group_call : empty)
+		| ((value & LocalFlag::Invites) ? Flag::f_invites : empty)
+		| ((value & LocalFlag::Topics) ? Flag::f_forums : empty)
+		| ((value & LocalFlag::SubExtend) ? Flag::f_sub_extend : empty)
+		| ((value & LocalFlag::EditRank) ? Flag::f_edit_rank : empty);
+}
+
+[[nodiscard]] auto RequestAdmins(const FilterValue &filter)
+-> QVector<MTPInputUser> {
+	auto result = QVector<MTPInputUser>();
+	if (!filter.admins || filter.admins->empty()) {
+		return result;
+	}
+	result.reserve(filter.admins->size());
+	for (const auto &admin : *filter.admins) {
+		result.push_back(admin->inputUser());
+	}
+	return result;
+}
+
+[[nodiscard]] auto RequestFlags(const FilterValue &filter)
+-> MTPchannels_GetAdminLog::Flags {
+	auto result = MTPchannels_GetAdminLog::Flags(0);
+	if (filter.flags != 0) {
+		result |= MTPchannels_GetAdminLog::Flag::f_events_filter;
+	}
+	if (filter.admins) {
+		result |= MTPchannels_GetAdminLog::Flag::f_admins;
+	}
+	return result;
+}
+
+[[nodiscard]] QString ExportDate(TimeId date) {
+	return base::unixtime::parse(date).toString(u"yyyy-MM-dd HH:mm:ss"_q);
+}
+
+[[nodiscard]] QString ExportAdmins(const FilterValue &filter) {
+	if (!filter.admins) {
+		return u"all"_q;
+	}
+	auto result = QString();
+	for (const auto &admin : *filter.admins) {
+		if (!result.isEmpty()) {
+			result += u", "_q;
+		}
+		result += admin->name();
+	}
+	return result.isEmpty() ? u"none"_q : result;
+}
+
+[[nodiscard]] QString ExportEntry(
+		not_null<HistoryItem*> item,
+		TextForMimeData text) {
+	if (text.empty()) {
+		text = HistoryItemText(item);
+	}
+	const auto content = text.expanded.trimmed();
+	auto result = u"["_q + ExportDate(item->date()) + u"]"_q;
+	const auto author = item->author()->name();
+	if (!author.isEmpty()) {
+		result += u" "_q + author;
+	}
+	if (!content.isEmpty()) {
+		result += u"\n"_q + content;
+	}
+	return result;
+}
 
 } // namespace
 
@@ -467,6 +559,23 @@ void InnerWidget::applySearch(const QString &query) {
 	}
 }
 
+void InnerWidget::exportLog() {
+	if (_exporting) {
+		_controller->showToast(tr::lng_admin_log_export_progress(tr::now));
+		return;
+	}
+	FileDialog::GetWritePath(
+		this,
+		tr::lng_admin_log_export(tr::now),
+		u"Text files (*.txt)"_q,
+		filedialogDefaultName(u"recent_actions"_q, u".txt"_q),
+		crl::guard(this, [=](QString &&path) {
+			if (!path.isEmpty()) {
+				startExport(std::move(path));
+			}
+		}));
+}
+
 void InnerWidget::requestAdmins() {
 	const auto offset = 0;
 	const auto participantsHash = uint64(0);
@@ -832,46 +941,9 @@ void InnerWidget::preloadMore(Direction direction) {
 		return;
 	}
 
-	auto flags = MTPchannels_GetAdminLog::Flags(0);
-	const auto filter = [&] {
-		using Flag = MTPDchannelAdminLogEventsFilter::Flag;
-		using LocalFlag = FilterValue::Flag;
-		const auto empty = MTPDchannelAdminLogEventsFilter::Flags(0);
-		const auto f = _filter.flags.value_or(LocalFlag());
-		return empty
-			| ((f & LocalFlag::Join) ? Flag::f_join : empty)
-			| ((f & LocalFlag::Leave) ? Flag::f_leave : empty)
-			| ((f & LocalFlag::Invite) ? Flag::f_invite : empty)
-			| ((f & LocalFlag::Ban) ? Flag::f_ban : empty)
-			| ((f & LocalFlag::Unban) ? Flag::f_unban : empty)
-			| ((f & LocalFlag::Kick) ? Flag::f_kick : empty)
-			| ((f & LocalFlag::Unkick) ? Flag::f_unkick : empty)
-			| ((f & LocalFlag::Promote) ? Flag::f_promote : empty)
-			| ((f & LocalFlag::Demote) ? Flag::f_demote : empty)
-			| ((f & LocalFlag::Info) ? Flag::f_info : empty)
-			| ((f & LocalFlag::Settings) ? Flag::f_settings : empty)
-			| ((f & LocalFlag::Pinned) ? Flag::f_pinned : empty)
-			| ((f & LocalFlag::Edit) ? Flag::f_edit : empty)
-			| ((f & LocalFlag::Delete) ? Flag::f_delete : empty)
-			| ((f & LocalFlag::GroupCall) ? Flag::f_group_call : empty)
-			| ((f & LocalFlag::Invites) ? Flag::f_invites : empty)
-			| ((f & LocalFlag::Topics) ? Flag::f_forums : empty)
-			| ((f & LocalFlag::SubExtend) ? Flag::f_sub_extend : empty)
-			| ((f & LocalFlag::EditRank) ? Flag::f_edit_rank : empty);
-	}();
-	if (_filter.flags != 0) {
-		flags |= MTPchannels_GetAdminLog::Flag::f_events_filter;
-	}
-	auto admins = QVector<MTPInputUser>(0);
-	if (_filter.admins) {
-		if (!_filter.admins->empty()) {
-			admins.reserve(_filter.admins->size());
-			for (const auto &admin : (*_filter.admins)) {
-				admins.push_back(admin->inputUser());
-			}
-		}
-		flags |= MTPchannels_GetAdminLog::Flag::f_admins;
-	}
+	const auto flags = RequestFlags(_filter);
+	const auto filter = RequestFilterFlags(_filter);
+	const auto admins = RequestAdmins(_filter);
 	auto maxId = (direction == Direction::Up) ? _minId : 0;
 	auto minId = (direction == Direction::Up) ? 0 : _maxId;
 	auto perPage = _items.empty() ? kEventsFirstPage : kEventsPerPage;
@@ -900,6 +972,139 @@ void InnerWidget::preloadMore(Direction direction) {
 		loadedFlag = true;
 		update();
 	}).send();
+}
+
+void InnerWidget::startExport(QString path) {
+	resetExport();
+	_exporting = true;
+	_exportPath = std::move(path);
+	_exportFilter = _filter;
+	_exportSearchQuery = _searchQuery;
+	_controller->showToast(tr::lng_admin_log_export_progress(tr::now));
+	requestExportPage();
+}
+
+void InnerWidget::requestExportPage() {
+	if (!_exporting || (_exportRequestId != 0)) {
+		return;
+	}
+	const auto flags = RequestFlags(_exportFilter);
+	const auto filter = RequestFilterFlags(_exportFilter);
+	const auto admins = RequestAdmins(_exportFilter);
+	_exportRequestId = _api.request(MTPchannels_GetAdminLog(
+		MTP_flags(flags),
+		_channel->inputChannel(),
+		MTP_string(_exportSearchQuery),
+		MTP_channelAdminLogEventsFilter(MTP_flags(filter)),
+		MTP_vector<MTPInputUser>(admins),
+		MTP_long(_exportMinId),
+		MTP_long(0),
+		MTP_int(kEventsPerPage)
+	)).done([=](const MTPchannels_AdminLogResults &result) {
+		Expects(result.type() == mtpc_channels_adminLogResults);
+
+		_exportRequestId = 0;
+
+		const auto &data = result.c_channels_adminLogResults();
+		_channel->owner().processUsers(data.vusers());
+		_channel->owner().processChats(data.vchats());
+
+		const auto &events = data.vevents().v;
+		if (events.empty()) {
+			finishExport();
+			return;
+		}
+
+		auto nextMinId = uint64(0);
+		for (const auto &event : events) {
+			const auto &eventData = event.data();
+			const auto eventId = eventData.vid().v;
+			if (!_exportEventIds.emplace(eventId).second) {
+				continue;
+			}
+			auto entries = std::vector<QString>();
+			GenerateItems(this, _history, eventData, [&](OwnedItem item, TimeId, MsgId) {
+				const auto entry = ExportEntry(
+					item->data(),
+					item->selectedText(FullSelection));
+				if (!entry.isEmpty()) {
+					entries.push_back(entry);
+				}
+			});
+			if (!entries.empty()) {
+				_exportEntries.push_back(std::move(entries));
+			}
+			if (!nextMinId || (eventId < nextMinId)) {
+				nextMinId = eventId;
+			}
+		}
+		if (!nextMinId
+			|| (nextMinId == 1)
+			|| (_exportMinId != 0 && nextMinId >= _exportMinId)) {
+			finishExport();
+			return;
+		}
+		_exportMinId = nextMinId;
+		requestExportPage();
+	}).fail([=] {
+		_exportRequestId = 0;
+		failExport();
+	}).send();
+}
+
+QString InnerWidget::serializeExport() const {
+	auto result = QString();
+	result += tr::lng_manage_peer_recent_actions(tr::now);
+	result += u"\nPeer: "_q + _channel->name();
+	result += u"\nExported at: "_q
+		+ QDateTime::currentDateTime().toString(u"yyyy-MM-dd HH:mm:ss"_q);
+	result += u"\nSearch: "_q + (_exportSearchQuery.isEmpty()
+		? u"-"_q
+		: _exportSearchQuery);
+	result += u"\nAction filters: "_q + (_exportFilter.flags
+		? u"custom"_q
+		: u"all"_q);
+	result += u"\nAdmins: "_q + ExportAdmins(_exportFilter);
+
+	for (auto i = _exportEntries.crbegin(); i != _exportEntries.crend(); ++i) {
+		for (const auto &entry : *i) {
+			result += u"\n\n"_q + entry;
+		}
+	}
+	return result;
+}
+
+void InnerWidget::finishExport() {
+	if (!_exporting) {
+		return;
+	}
+	const auto path = _exportPath;
+	const auto bytes = serializeExport().toUtf8();
+	auto file = QSaveFile(path);
+	if (!file.open(QIODevice::WriteOnly)
+		|| (file.write(bytes) != bytes.size())
+		|| !file.commit()) {
+		failExport();
+		return;
+	}
+	resetExport();
+	_controller->showToast(tr::lng_admin_log_export_done(tr::now));
+}
+
+void InnerWidget::failExport() {
+	resetExport();
+	_controller->showToast(tr::lng_admin_log_export_error(tr::now));
+}
+
+void InnerWidget::resetExport() {
+	_api.request(base::take(_exportRequestId)).cancel();
+	_exportFilter = {};
+	_exportSearchQuery = QString();
+	_exportPath = QString();
+	_exportEntries.clear();
+	_exportEventIds.clear();
+	_exportMinId = 0;
+	_exporting = false;
 }
 
 void InnerWidget::addEvents(Direction direction, const QVector<MTPChannelAdminLogEvent> &events) {
