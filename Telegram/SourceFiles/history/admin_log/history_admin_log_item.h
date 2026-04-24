@@ -24,6 +24,11 @@ void GenerateItems(
 	const MTPDchannelAdminLogEvent &event,
 	Fn<void(OwnedItem item, TimeId sentDate, MsgId)> callback);
 
+bool GenerateExportEntries(
+	not_null<History*> history,
+	const MTPDchannelAdminLogEvent &event,
+	Fn<void(QString text)> callback);
+
 // Smart pointer wrapper for HistoryItem* that destroys the owned item.
 class OwnedItem {
 public:

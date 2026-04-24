@@ -37,6 +37,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace AdminLog {
 namespace {
 
+enum class ParticipantTextMode {
+	Ui,
+	Export,
+};
+
 TextWithEntities PrepareText(
 		const QString &value,
 		const QString &emptyValue) {
@@ -558,9 +563,20 @@ TextWithEntities GenerateInviteLinkChangeText(
 
 auto GenerateParticipantString(
 		not_null<Main::Session*> session,
-		PeerId participantId) {
+		PeerId participantId,
+		ParticipantTextMode mode = ParticipantTextMode::Ui) {
 	// User name in "User name (@username)" format with entities.
 	const auto peer = session->data().peer(participantId);
+	const auto username = peer->username();
+	if (mode == ParticipantTextMode::Export) {
+		if (const auto user = peer->asUser()) {
+			const auto id = QString::number(peerToUser(user->id).bare);
+			return TextWithEntities{ username.isEmpty()
+				? u"%1 (id: %2)"_q.arg(peer->name(), id)
+				: u"%1 (@%2, id: %3)"_q.arg(peer->name(), username, id) };
+		}
+		return TextWithEntities{ peer->name() };
+	}
 	auto name = TextWithEntities { peer->name()};
 	if (const auto user = peer->asUser()) {
 		const auto data = TextUtilities::MentionNameDataFromFields({
@@ -575,7 +591,6 @@ auto GenerateParticipantString(
 			data,
 		});
 	}
-	const auto username = peer->username();
 	if (username.isEmpty()) {
 		return name;
 	}
@@ -596,7 +611,8 @@ auto GenerateParticipantString(
 auto GenerateParticipantChangeText(
 		not_null<ChannelData*> channel,
 		const Api::ChatParticipant &participant,
-		std::optional<Api::ChatParticipant> oldParticipant = std::nullopt) {
+		std::optional<Api::ChatParticipant> oldParticipant = std::nullopt,
+		ParticipantTextMode mode = ParticipantTextMode::Ui) {
 	using Type = Api::ChatParticipant::Type;
 	const auto oldRights = oldParticipant
 		? oldParticipant->rights()
@@ -608,7 +624,8 @@ auto GenerateParticipantChangeText(
 	const auto generateOther = [&](PeerId participantId) {
 		auto user = GenerateParticipantString(
 			&channel->session(),
-			participantId);
+			participantId,
+			mode);
 		if (oldParticipant && oldParticipant->type() == Type::Admin) {
 			return GenerateAdminChangeText(
 				channel,
@@ -638,14 +655,15 @@ auto GenerateParticipantChangeText(
 			tr::marked);
 	};
 
-	auto result = [&] {
+		auto result = [&] {
 		const auto &peerId = participant.id();
 		switch (participant.type()) {
 		case Api::ChatParticipant::Type::Creator: {
 			// No valid string here :(
 			const auto user = GenerateParticipantString(
 				&channel->session(),
-				peerId);
+				peerId,
+				mode);
 			if (peerId == channel->session().userPeerId()) {
 				return GenerateAdminChangeText(
 					channel,
@@ -662,7 +680,8 @@ auto GenerateParticipantChangeText(
 		case Api::ChatParticipant::Type::Admin: {
 			const auto user = GenerateParticipantString(
 				&channel->session(),
-				peerId);
+				peerId,
+				mode);
 			return GenerateAdminChangeText(
 				channel,
 				user,
@@ -673,7 +692,8 @@ auto GenerateParticipantChangeText(
 		case Api::ChatParticipant::Type::Banned: {
 			const auto user = GenerateParticipantString(
 				&channel->session(),
-				peerId);
+				peerId,
+				mode);
 			return GeneratePermissionsChangeText(
 				peerId,
 				user,
@@ -695,7 +715,8 @@ auto GenerateParticipantChangeText(
 TextWithEntities GenerateParticipantChangeText(
 		not_null<ChannelData*> channel,
 		const MTPChannelParticipant &participant,
-		std::optional<MTPChannelParticipant>oldParticipant = std::nullopt) {
+		std::optional<MTPChannelParticipant>oldParticipant = std::nullopt,
+		ParticipantTextMode mode = ParticipantTextMode::Ui) {
 	return GenerateParticipantChangeText(
 		channel,
 		Api::ChatParticipant(participant, channel),
@@ -703,8 +724,220 @@ TextWithEntities GenerateParticipantChangeText(
 			? std::make_optional(Api::ChatParticipant(
 				*oldParticipant,
 				channel))
-			: std::nullopt);
+			: std::nullopt,
+		mode);
 }
+
+TextWithEntities GenerateExportTargetUserText(
+		not_null<Main::Session*> session,
+		PeerId participantId) {
+	return GenerateParticipantString(
+		session,
+		participantId,
+		ParticipantTextMode::Export);
+}
+
+TextWithEntities GenerateExportFromText(not_null<UserData*> from) {
+	return TextWithEntities{ from->name() };
+}
+
+} // namespace
+
+bool GenerateExportEntries(
+		not_null<History*> history,
+		const MTPDchannelAdminLogEvent &event,
+		Fn<void(QString text)> callback) {
+	Expects(history->peer->isChannel());
+
+	using LogInvite = MTPDchannelAdminLogEventActionParticipantInvite;
+	using LogBan = MTPDchannelAdminLogEventActionParticipantToggleBan;
+	using LogPromote = MTPDchannelAdminLogEventActionParticipantToggleAdmin;
+	using LogMute = MTPDchannelAdminLogEventActionParticipantMute;
+	using LogUnmute = MTPDchannelAdminLogEventActionParticipantUnmute;
+	using LogVolume = MTPDchannelAdminLogEventActionParticipantVolume;
+	using LogJoinByRequest
+		= MTPDchannelAdminLogEventActionParticipantJoinByRequest;
+	using LogParticipantSubExtend
+		= MTPDchannelAdminLogEventActionParticipantSubExtend;
+	using LogParticipantEditRank
+		= MTPDchannelAdminLogEventActionParticipantEditRank;
+
+	const auto channel = history->peer->asChannel();
+	const auto broadcast = channel->isBroadcast();
+	const auto from = history->owner().user(event.vuser_id().v);
+	const auto fromText = GenerateExportFromText(from);
+	const auto emit = [&](const TextWithEntities &text) {
+		callback(text.text);
+	};
+	const auto groupCallParticipantPeer = [&](const MTPGroupCallParticipant &data) {
+		return data.match([&](const MTPDgroupCallParticipant &data) {
+			return history->owner().peer(peerFromMTP(data.vpeer()));
+		});
+	};
+
+	return event.vaction().match(
+	[&](const LogInvite &action) {
+		emit(GenerateParticipantChangeText(
+			channel,
+			action.vparticipant(),
+			std::nullopt,
+			ParticipantTextMode::Export));
+		return true;
+	}, [&](const LogBan &action) {
+		emit(GenerateParticipantChangeText(
+			channel,
+			action.vnew_participant(),
+			action.vprev_participant(),
+			ParticipantTextMode::Export));
+		return true;
+	}, [&](const LogPromote &action) {
+		if ((action.vnew_participant().type() == mtpc_channelParticipantAdmin)
+			&& (action.vprev_participant().type()
+				== mtpc_channelParticipantCreator)) {
+			return true;
+		}
+		emit(GenerateParticipantChangeText(
+			channel,
+			action.vnew_participant(),
+			action.vprev_participant(),
+			ParticipantTextMode::Export));
+		return true;
+	}, [&](const LogMute &data) {
+		const auto participantPeer = groupCallParticipantPeer(
+			data.vparticipant());
+		emit((broadcast
+			? tr::lng_admin_log_muted_participant_channel
+			: tr::lng_admin_log_muted_participant)(
+				tr::now,
+				lt_from,
+				fromText,
+				lt_user,
+				GenerateExportTargetUserText(&history->session(), participantPeer->id),
+				tr::marked));
+		return true;
+	}, [&](const LogUnmute &data) {
+		const auto participantPeer = groupCallParticipantPeer(
+			data.vparticipant());
+		emit((broadcast
+			? tr::lng_admin_log_unmuted_participant_channel
+			: tr::lng_admin_log_unmuted_participant)(
+				tr::now,
+				lt_from,
+				fromText,
+				lt_user,
+				GenerateExportTargetUserText(&history->session(), participantPeer->id),
+				tr::marked));
+		return true;
+	}, [&](const LogVolume &data) {
+		const auto participantPeer = groupCallParticipantPeer(
+			data.vparticipant());
+		const auto volume = data.vparticipant().match([&](
+				const MTPDgroupCallParticipant &data) {
+			return data.vvolume().value_or(10000);
+		});
+		emit((broadcast
+			? tr::lng_admin_log_participant_volume_channel
+			: tr::lng_admin_log_participant_volume)(
+				tr::now,
+				lt_from,
+				fromText,
+				lt_user,
+				GenerateExportTargetUserText(&history->session(), participantPeer->id),
+				lt_percent,
+				{ .text = QString::number(volume / 100) + '%' },
+				tr::marked));
+		return true;
+	}, [&](const LogJoinByRequest &data) {
+		const auto user = channel->owner().user(UserId(data.vapproved_by()));
+		const auto linkText = GenerateInviteLinkLink(data.vinvite());
+		emit((linkText.text == PublicJoinLink())
+			? (channel->isMegagroup()
+				? tr::lng_admin_log_participant_approved_by_request
+				: tr::lng_admin_log_participant_approved_by_request_channel)(
+					tr::now,
+					lt_from,
+					fromText,
+					lt_user,
+					GenerateExportTargetUserText(&history->session(), user->id),
+					tr::marked)
+			: (channel->isMegagroup()
+				? tr::lng_admin_log_participant_approved_by_link
+				: tr::lng_admin_log_participant_approved_by_link_channel)(
+					tr::now,
+					lt_from,
+					fromText,
+					lt_link,
+					linkText,
+					lt_user,
+					GenerateExportTargetUserText(&history->session(), user->id),
+					tr::marked));
+		return true;
+	}, [&](const LogParticipantSubExtend &action) {
+		const auto participant = Api::ChatParticipant(
+			action.vnew_participant(),
+			channel);
+		if (!participant.subscriptionDate()) {
+			return true;
+		}
+		emit(tr::lng_admin_log_subscription_extend(
+			tr::now,
+			lt_name,
+			GenerateExportTargetUserText(
+				&history->session(),
+				participant.id()),
+			lt_date,
+			{ langDateTimeFull(
+				base::unixtime::parse(participant.subscriptionDate())) },
+			tr::marked));
+		return true;
+	}, [&](const LogParticipantEditRank &action) {
+		const auto user = history->owner().user(action.vuser_id().v);
+		const auto prevRank = qs(action.vprev_rank());
+		const auto newRank = qs(action.vnew_rank());
+		if (user == from) {
+			return false;
+		}
+		const auto userText = GenerateExportTargetUserText(
+			&history->session(),
+			user->id);
+		emit(newRank.isEmpty()
+			? tr::lng_admin_log_removed_rank(
+				tr::now,
+				lt_from,
+				fromText,
+				lt_user,
+				userText,
+				lt_previous,
+				{ prevRank },
+				tr::marked)
+			: prevRank.isEmpty()
+			? tr::lng_admin_log_set_rank(
+				tr::now,
+				lt_from,
+				fromText,
+				lt_user,
+				userText,
+				lt_tag,
+				{ newRank },
+				tr::marked)
+			: tr::lng_admin_log_changed_rank_from(
+				tr::now,
+				lt_from,
+				fromText,
+				lt_user,
+				userText,
+				lt_previous,
+				{ prevRank },
+				lt_tag,
+				{ newRank },
+				tr::marked));
+		return true;
+	}, [](const auto &) {
+		return false;
+	});
+}
+
+namespace {
 
 TextWithEntities GenerateDefaultBannedRightsChangeText(
 		not_null<ChannelData*> channel,

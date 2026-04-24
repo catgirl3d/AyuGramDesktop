@@ -177,6 +177,22 @@ constexpr auto kClearUserpicsAfter = 50;
 	return result;
 }
 
+[[nodiscard]] QString ExportEntry(
+		TimeId date,
+		not_null<PeerData*> author,
+		QString text) {
+	text = text.trimmed();
+	auto result = u"["_q + ExportDate(date) + u"]"_q;
+	const auto authorName = author->name();
+	if (!authorName.isEmpty()) {
+		result += u" "_q + authorName;
+	}
+	if (!text.isEmpty()) {
+		result += u"\n"_q + text;
+	}
+	return result;
+}
+
 } // namespace
 
 template <InnerWidget::EnumItemsDirection direction, typename Method>
@@ -1023,14 +1039,27 @@ void InnerWidget::requestExportPage() {
 				continue;
 			}
 			auto entries = std::vector<QString>();
-			GenerateItems(this, _history, eventData, [&](OwnedItem item, TimeId, MsgId) {
-				const auto entry = ExportEntry(
-					item->data(),
-					item->selectedText(FullSelection));
-				if (!entry.isEmpty()) {
-					entries.push_back(entry);
-				}
-			});
+			if (!GenerateExportEntries(
+					_history,
+					eventData,
+					[&](QString text) {
+						const auto entry = ExportEntry(
+							eventData.vdate().v,
+							_history->owner().user(eventData.vuser_id().v),
+							std::move(text));
+						if (!entry.isEmpty()) {
+							entries.push_back(entry);
+						}
+					})) {
+				GenerateItems(this, _history, eventData, [&](OwnedItem item, TimeId, MsgId) {
+					const auto entry = ExportEntry(
+						item->data(),
+						item->selectedText(FullSelection));
+					if (!entry.isEmpty()) {
+						entries.push_back(entry);
+					}
+				});
+			}
 			if (!entries.empty()) {
 				_exportEntries.push_back(std::move(entries));
 			}
